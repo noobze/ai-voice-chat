@@ -15,8 +15,8 @@ export default function VoiceChat() {
   const streamRef = useRef<MediaStream | null>(null)
   const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const recordingRef = useRef(false)
+  const playPromiseRef = useRef<Promise<void> | null>(null)
 
-  // Update recording ref when recording state changes
   useEffect(() => {
     recordingRef.current = recording
   }, [recording])
@@ -26,7 +26,6 @@ export default function VoiceChat() {
     onSpeechStart: () => {
       console.log("Voice started")
       setStatus("Voice detected...")
-      // Clear any existing silence timeout
       if (silenceTimeoutRef.current) {
         clearTimeout(silenceTimeoutRef.current)
         silenceTimeoutRef.current = null
@@ -34,17 +33,15 @@ export default function VoiceChat() {
     },
     onSpeechEnd: () => {
       console.log("Voice stopped")
-      // Wait a bit before stopping to catch any final words
       if (recording && !isAIPlaying) {
         silenceTimeoutRef.current = setTimeout(() => {
           if (recording && !isAIPlaying) {
             stopRecording()
           }
           silenceTimeoutRef.current = null
-        }, 900) // 0.9 seconds of silence before stopping
+        }, 600) // 0.9 seconds of silence before stopping
       }
     },
-    // Optional configuration
     positiveSpeechThreshold: 0.8,
     negativeSpeechThreshold: 0.3,
     minSpeechFrames: 5,
@@ -52,48 +49,40 @@ export default function VoiceChat() {
     redemptionFrames: 30
   })
 
-  // Clean up resources when component unmounts
   useEffect(() => {
     return () => {
       cleanupAudio()
     }
   }, [])
 
-  // Set up audio ended event listener
   useEffect(() => {
-    const setupAudioEndedListener = () => {
-      const audioElement = audioRef.current
+    if (!aiAudioUrl) return
+
+    const audioElement = audioRef.current
+    if (!audioElement) return
+
+    const handleAudioEnded = () => {
+      console.log("AI response finished playing", { isRecording: recordingRef.current })
+      setIsAIPlaying(false)
+      setStatus("Listening...")
       
-      if (audioElement) {
-        const handleAudioEnded = () => {
-          console.log("AI response finished playing", { isRecording: recordingRef.current })
-          setIsAIPlaying(false)
-          setStatus("Listening...")
-          
-          // Resume listening after AI response ends with a small delay
-          setTimeout(() => {
-            console.log("Attempting to restart recording")
-            if (!recordingRef.current) {
-              startRecording()
-            }
-          }, 300)
+      setTimeout(() => {
+        console.log("Attempting to restart recording")
+        if (!recordingRef.current) {
+          startRecording()
         }
-        
-        // Remove any existing listeners first to avoid duplicates
-        audioElement.removeEventListener('ended', handleAudioEnded)
-        // Add the listener
-        audioElement.addEventListener('ended', handleAudioEnded)
-        
-        return () => {
-          audioElement.removeEventListener('ended', handleAudioEnded)
-        }
-      }
+      }, 300)
     }
     
-    // Setup the listener initially and whenever aiAudioUrl changes
-    const cleanup = setupAudioEndedListener()
-    return cleanup
-  }, [aiAudioUrl]) // Re-run when aiAudioUrl changes
+    // Remove any existing listeners first to avoid duplicates
+    audioElement.removeEventListener('ended', handleAudioEnded)
+    // Add the listener
+    audioElement.addEventListener('ended', handleAudioEnded)
+    
+    return () => {
+      audioElement.removeEventListener('ended', handleAudioEnded)
+    }
+  }, [aiAudioUrl])
 
   // Clean up all audio resources
   const cleanupAudio = () => {
@@ -129,11 +118,13 @@ export default function VoiceChat() {
       audioChunksRef.current = []
 
       // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: false
-      } })
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false
+        } 
+      })
       streamRef.current = stream
       
       // Create media recorder
@@ -209,7 +200,7 @@ export default function VoiceChat() {
       setStatus("Error: Could not process audio")
       // Try to restart listening after error
       setTimeout(() => {
-        if (!recording && !isAIPlaying) {
+        if (!recordingRef.current && !isAIPlaying) {
           startRecording()
         }
       }, 2000)
@@ -246,32 +237,53 @@ export default function VoiceChat() {
       const audioBlob = new Blob(audioChunks, { type: "audio/mpeg" })
       const url = URL.createObjectURL(audioBlob)
       
+      // Set state before playing audio
       setAiAudioUrl(url)
       setStatus("AI is speaking...")
       setIsAIPlaying(true)
       
-      // Play the audio automatically
+      // Play the audio with proper promise handling
       if (audioRef.current) {
+        // Ensure any previous play promise is handled
+        if (playPromiseRef.current) {
+          try {
+            await playPromiseRef.current
+          } catch (e) {
+            console.error("Previous play promise error:", e)
+          }
+          playPromiseRef.current = null
+        }
+        
+        // Set source and play with proper error handling
         audioRef.current.src = url
-        audioRef.current.play().catch(err => {
+        
+        // Store the play promise
+        playPromiseRef.current = audioRef.current.play()
+        
+        try {
+          await playPromiseRef.current
+          console.log("Audio playback started successfully")
+        } catch (err) {
           console.error("Error auto-playing audio:", err)
           setStatus("Click to play AI response")
           setIsAIPlaying(false)
           
           // If autoplay fails, still try to restart listening
           setTimeout(() => {
-            if (!recording) {
+            if (!recordingRef.current) {
               startRecording()
             }
           }, 1000)
-        })
+        } finally {
+          playPromiseRef.current = null
+        }
       }
       
       // Failsafe: If for some reason the ended event doesn't fire,
       // restart listening after a maximum response time
       const maxResponseTime = 60000 // 60 seconds max for AI response
       setTimeout(() => {
-        if (isAIPlaying && !recording) {
+        if (isAIPlaying && !recordingRef.current) {
           console.log("Failsafe: Resuming listening after timeout")
           setIsAIPlaying(false)
           startRecording()
@@ -284,7 +296,7 @@ export default function VoiceChat() {
       
       // Try to restart listening after error
       setTimeout(() => {
-        if (!recording && !isAIPlaying) {
+        if (!recordingRef.current && !isAIPlaying) {
           startRecording()
         }
       }, 2000)
@@ -309,15 +321,30 @@ export default function VoiceChat() {
     if (isAIPlaying) {
       // If AI is speaking, just stop it
       if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current.currentTime = 0
+        // Handle the play promise properly when stopping
+        if (playPromiseRef.current) {
+          playPromiseRef.current
+            .then(() => {
+              audioRef.current?.pause()
+              audioRef.current!.currentTime = 0
+            })
+            .catch(e => {
+              console.error("Error with play promise during toggle:", e)
+            })
+            .finally(() => {
+              playPromiseRef.current = null
+            })
+        } else {
+          audioRef.current.pause()
+          audioRef.current.currentTime = 0
+        }
       }
       setIsAIPlaying(false)
       setStatus("AI response stopped")
       
       // Restart listening
       setTimeout(() => {
-        if (!recording) {
+        if (!recordingRef.current) {
           startRecording()
         }
       }, 500)
