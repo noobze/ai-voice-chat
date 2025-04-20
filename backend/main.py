@@ -1,8 +1,9 @@
 import io
 import os
+import json
+import base64
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
@@ -22,57 +23,69 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def stream_audio(audio_bytes):
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
     try:
-        # 1. Transcribe audio to text
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = "audio.webm"  # Name is required for content type detection
-        
-        transcript = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            response_format="text"
-        )
-        
-        prompt = transcript
-        print(f"Transcription: {prompt}")
-        
-        # 2. Get chat response
-        chat_response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        ai_text = chat_response.choices[0].message.content
-        print(f"AI response: {ai_text}")
-        
-        # 3. Synthesize speech (TTS)
-        tts_response = client.audio.speech.create(
-            model="tts-1",
-            voice="alloy",  # Options: alloy, echo, fable, onyx, nova, shimmer
-            input=ai_text
-        )
-        
-        # 4. Stream the audio back
-        def audio_stream():
-            for chunk in tts_response.iter_bytes(chunk_size=4096):
-                yield chunk
-        
-        return StreamingResponse(audio_stream(), media_type="audio/mpeg")
-    
+        while True:
+            # Receive the audio data
+            audio_data = await websocket.receive_bytes()
+            
+            try:
+                # Convert bytes to file-like object
+                audio_file = io.BytesIO(audio_data)
+                audio_file.name = "audio.webm"
+                
+                # 1. Transcribe audio using Whisper
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="text"
+                )
+                
+                print(f"Transcription: {transcript}")
+                
+                # Send transcription back immediately
+                await websocket.send_json({
+                    "type": "transcription",
+                    "text": transcript
+                })
+                
+                # 2. Get chat response
+                chat_response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": transcript}]
+                )
+                
+                ai_text = chat_response.choices[0].message.content
+                print(f"AI response: {ai_text}")
+                
+                # 3. Generate speech from AI response
+                tts_response = client.audio.speech.create(
+                    model="tts-1",
+                    voice="alloy",
+                    input=ai_text
+                )
+                
+                # Convert audio to base64
+                audio_base64 = base64.b64encode(tts_response.content).decode('utf-8')
+                
+                # 4. Send AI response and audio back
+                await websocket.send_json({
+                    "type": "ai_response",
+                    "text": ai_text,
+                    "audio": audio_base64
+                })
+                
+            except Exception as e:
+                print(f"Error processing audio: {str(e)}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(e)
+                })
+                
     except Exception as e:
-        print(f"Error in stream_audio: {str(e)}")
-        raise
-
-@app.post("/voice-chat")
-async def voice_chat(audio: UploadFile = File(...)):
-    try:
-        print(f"Received audio file: {audio.filename}")
-        audio_bytes = await audio.read()
-        return await stream_audio(audio_bytes)
-    except Exception as e:
-        print(f"Error in voice_chat: {str(e)}")
-        raise
+        print(f"WebSocket error: {str(e)}")
 
 @app.get("/health")
 async def health_check():
