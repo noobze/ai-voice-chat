@@ -108,7 +108,6 @@ export default function VoiceChat() {
     onSpeechStart: () => {
       console.log("Voice started")
       setStatus("Voice detected...")
-      currentChunkRef.current = []
       if (silenceTimeoutRef.current) {
         clearTimeout(silenceTimeoutRef.current)
         silenceTimeoutRef.current = null
@@ -118,7 +117,10 @@ export default function VoiceChat() {
       console.log("Voice stopped")
       if (recording && !isAIPlaying) {
         try {
-          // Create a MediaRecorder to encode the audio
+          vad.pause() // Pause VAD immediately when speech ends
+          setRecording(false) // Update UI to show we're not recording
+          setStatus("Processing...")
+
           const audioContext = new AudioContext()
           const audioBuffer = audioContext.createBuffer(1, audioData.length, 16000)
           audioBuffer.copyToChannel(audioData, 0)
@@ -142,50 +144,41 @@ export default function VoiceChat() {
               
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(await blob.arrayBuffer())
-                setStatus("Processing...")
               } else {
                 console.error("WebSocket is not connected")
                 setStatus("Error: Not connected to server")
+                setRecording(true) // Re-enable recording on error
+                vad.start()
               }
               resolve()
             }
             
-            // Start recording and play the audio
             mediaRecorder.start()
             source.start()
             
-            // Calculate duration based on the audio buffer length
-            const duration = audioBuffer.length / audioBuffer.sampleRate * 1000 // Convert to milliseconds
-            console.log("Audio duration:", duration, "ms")
-            
-            // Stop after the full duration plus a small buffer
+            const duration = audioBuffer.length / audioBuffer.sampleRate * 1000
             setTimeout(() => {
               mediaRecorder.stop()
               source.stop()
               audioContext.close()
-            }, duration + 100) // Add 100ms buffer
+            }, duration + 100)
           })
         } catch (error) {
           console.error("Error processing audio:", error)
           setStatus("Error processing audio")
+          setRecording(true) // Re-enable recording on error
+          vad.start()
         }
       }
-      
-      silenceTimeoutRef.current = setTimeout(() => {
-        if (recording && !isAIPlaying) {
-          stopRecording(false)
-        }
-        silenceTimeoutRef.current = null
-      }, 1000)
     },
     onVADMisfire: () => {
       // Handle VAD misfire if needed
     },
-    positiveSpeechThreshold: 0.8,
-    negativeSpeechThreshold: 0.3,
-    minSpeechFrames: 5,
-    preSpeechPadFrames: 10,
-    redemptionFrames: 30
+    positiveSpeechThreshold: 0.9,
+    negativeSpeechThreshold: 0.8,
+    minSpeechFrames: 3,
+    preSpeechPadFrames: 1,
+    redemptionFrames: 4
   })
 
   const cleanupAudio = () => {
@@ -206,6 +199,7 @@ export default function VoiceChat() {
   }
 
   const startRecording = async () => {
+    if (isAIPlaying) return // Don't start if AI is playing
     console.log("Starting recording...", new Date().toISOString())
     try {
       setStatus("Listening...")
@@ -233,22 +227,25 @@ export default function VoiceChat() {
   }
 
   const stopRecording = (isManual: boolean = true) => {
-    if (!isAIPlaying) {
+    if (isManual) {
+      // Only check duration for manual stops
       const recordingDuration = recordingStartTimeRef.current 
         ? Date.now() - recordingStartTimeRef.current 
         : 0
 
-      if (isManual && recordingDuration < 5000) {
+      if (recordingDuration < 5000) {
         setStatus("Recording too short")
         cleanupAudio()
-        setTimeout(() => setStatus("Idle"), 2000)
+        setTimeout(() => {
+          setStatus("Idle")
+        }, 2000)
         return
       }
-
-      setStatus("Processing...")
-      vad.pause()
-      cleanupAudio()
     }
+
+    setStatus("Processing...")
+    vad.pause()
+    cleanupAudio()
   }
 
   const toggleRecording = () => {
@@ -259,9 +256,10 @@ export default function VoiceChat() {
       }
       setIsAIPlaying(false)
       setStatus("AI response stopped")
+      startRecording() // Start recording when AI is stopped manually
     } else {
       if (recording) {
-        stopRecording(true)
+        stopRecording(true) // Manual stop
       } else {
         startRecording()
       }
@@ -329,6 +327,7 @@ export default function VoiceChat() {
               onEnded={() => {
                 setIsAIPlaying(false)
                 setStatus("Idle")
+                startRecording() // Auto-restart recording when AI response ends
               }}
             />
           )}
