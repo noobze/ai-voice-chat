@@ -7,7 +7,7 @@ import { useMicVAD } from "@ricky0123/vad-react"
 interface Message {
   type: 'user' | 'ai'
   text: string
-  isLive?: boolean
+  pending?: boolean
 }
 
 export default function VoiceChat() {
@@ -26,6 +26,10 @@ export default function VoiceChat() {
   const chatContainerRef = useRef<HTMLDivElement | null>(null)
   const currentChunkRef = useRef<Blob[]>([])
   const wsRef = useRef<WebSocket | null>(null)
+  const [shouldClearTranscript, setShouldClearTranscript] = useState(false)
+  const lastTranscriptRef = useRef("")
+  const [displayedText, setDisplayedText] = useState("")
+  const animationRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     // Initialize WebSocket connection
@@ -40,15 +44,26 @@ export default function VoiceChat() {
       const data = JSON.parse(event.data)
       
       if (data.type === 'transcription') {
+        lastTranscriptRef.current = data.text
         setLiveTranscript(data.text)
       } else if (data.type === 'ai_response') {
-        // Add messages to chat
-        setMessages(prev => [
-          ...prev, 
-          { type: 'user', text: liveTranscript },
-          { type: 'ai', text: data.text }
-        ])
-        setLiveTranscript("")
+        const finalTranscript = lastTranscriptRef.current || liveTranscript
+        
+        // Clear animation
+        if (animationRef.current) {
+          clearInterval(animationRef.current)
+        }
+        
+        // First add the user's message
+        setMessages(prev => [...prev, { type: 'user', text: finalTranscript }])
+        
+        // Then in a separate update, add the AI response
+        setTimeout(() => {
+          setMessages(prev => [...prev, { type: 'ai', text: data.text }])
+          setLiveTranscript("")
+          setDisplayedText("")
+          lastTranscriptRef.current = ""
+        }, 100)
         
         // Handle audio response
         const audioBlob = await fetch(`data:audio/mpeg;base64,${data.audio}`).then(r => r.blob())
@@ -58,13 +73,30 @@ export default function VoiceChat() {
         setIsAIPlaying(true)
         
         if (audioRef.current) {
+          // If there's a previous play promise pending, wait for it
+          if (playPromiseRef.current) {
+            try {
+              await playPromiseRef.current
+            } catch (err) {
+              console.error("Previous playback error:", err)
+            }
+          }
+          
+          // Stop any current playback
+          audioRef.current.pause()
+          audioRef.current.currentTime = 0
+          
+          // Set new source and play
           audioRef.current.src = url
           try {
-            await audioRef.current.play()
+            playPromiseRef.current = audioRef.current.play()
+            await playPromiseRef.current
+            playPromiseRef.current = null
           } catch (err) {
             console.error("Error auto-playing audio:", err)
             setStatus("Click to play AI response")
             setIsAIPlaying(false)
+            playPromiseRef.current = null
           }
         }
       } else if (data.type === 'error') {
@@ -102,6 +134,13 @@ export default function VoiceChat() {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
     }
   }, [messages, liveTranscript])
+
+  useEffect(() => {
+    if (shouldClearTranscript) {
+      setLiveTranscript("")
+      setShouldClearTranscript(false)
+    }
+  }, [messages])
 
   // Use the VAD hook with WebSocket
   const vad = useMicVAD({
@@ -266,6 +305,45 @@ export default function VoiceChat() {
     }
   }
 
+  useEffect(() => {
+    if (!liveTranscript) {
+      setDisplayedText("")
+      return
+    }
+
+    let currentIndex = 0
+    const words = liveTranscript.split(" ")
+    
+    // Clear any existing animation
+    if (animationRef.current) {
+      clearInterval(animationRef.current)
+    }
+
+    // Reset displayed text if it's a new transcription
+    if (!liveTranscript.startsWith(displayedText)) {
+      setDisplayedText("")
+      currentIndex = 0
+    }
+
+    // Animate word by word
+    animationRef.current = setInterval(() => {
+      if (currentIndex <= words.length) {
+        setDisplayedText(words.slice(0, currentIndex).join(" "))
+        currentIndex++
+      } else {
+        if (animationRef.current) {
+          clearInterval(animationRef.current)
+        }
+      }
+    }, 200) // Adjust speed here (higher = slower)
+
+    return () => {
+      if (animationRef.current) {
+        clearInterval(animationRef.current)
+      }
+    }
+  }, [liveTranscript])
+
   return (
     <main className="bg-gray-900 min-h-screen flex flex-col items-center justify-center text-white relative">
       <div className="flex flex-col items-center justify-center w-full max-w-2xl mx-auto p-4 relative">
@@ -284,7 +362,7 @@ export default function VoiceChat() {
               <div 
                 className={`max-w-[80%] p-3 rounded-lg ${
                   message.type === 'user' 
-                    ? 'bg-blue-600 text-white ml-auto' 
+                    ? 'bg-blue-600 text-white ml-auto'
                     : 'bg-gray-700 text-white'
                 }`}
               >
@@ -295,7 +373,7 @@ export default function VoiceChat() {
           {liveTranscript && (
             <div className="flex justify-end">
               <div className="max-w-[80%] p-3 rounded-lg bg-blue-600/50 text-white ml-auto">
-                {liveTranscript}
+                {displayedText}
               </div>
             </div>
           )}
@@ -327,6 +405,7 @@ export default function VoiceChat() {
               onEnded={() => {
                 setIsAIPlaying(false)
                 setStatus("Idle")
+                playPromiseRef.current = null
                 startRecording() // Auto-restart recording when AI response ends
               }}
             />
