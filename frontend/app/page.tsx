@@ -215,9 +215,10 @@ export default function VoiceChat() {
     },
     positiveSpeechThreshold: 0.9,
     negativeSpeechThreshold: 0.8,
-    minSpeechFrames: 3,
-    preSpeechPadFrames: 1,
-    redemptionFrames: 4
+    minSpeechFrames: 5,
+    preSpeechPadFrames: 2,
+    redemptionFrames: 8,
+    frameSamples: 1024
   })
 
   const cleanupAudio = () => {
