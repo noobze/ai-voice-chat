@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from "react"
-import { FaMicrophone, FaMicrophoneSlash, FaPaperPlane } from "react-icons/fa"
+import { FaMicrophone, FaMicrophoneSlash, FaPaperPlane, FaCog } from "react-icons/fa"
 import { useMicVAD } from "@ricky0123/vad-react"
 
 interface Message {
@@ -12,6 +12,11 @@ interface Message {
 
 // Input modes to track which method the user is using
 type InputMode = 'voice' | 'text' | 'idle';
+
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+}
 
 export default function VoiceChat() {
   const [recording, setRecording] = useState(false)
@@ -36,6 +41,47 @@ export default function VoiceChat() {
   const [textInput, setTextInput] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
   const [inputMode, setInputMode] = useState<InputMode>('idle')
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("")
+  const [showDeviceSelector, setShowDeviceSelector] = useState(false)
+
+  // Load available audio input devices
+  useEffect(() => {
+    async function getAudioDevices() {
+      try {
+        // First request permission to access devices
+        await navigator.mediaDevices.getUserMedia({ audio: true })
+        
+        // Then enumerate devices
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const audioInputs = devices
+          .filter(device => device.kind === 'audioinput')
+          .map(device => ({
+            deviceId: device.deviceId,
+            label: device.label || `Microphone ${device.deviceId.slice(0, 5)}...`
+          }))
+        
+        setAudioDevices(audioInputs)
+        
+        // Select the first device by default if none is selected
+        if (audioInputs.length > 0 && !selectedDeviceId) {
+          setSelectedDeviceId(audioInputs[0].deviceId)
+        }
+      } catch (err) {
+        console.error("Error accessing media devices:", err)
+        setStatus("Error: Could not access microphone")
+      }
+    }
+    
+    getAudioDevices()
+    
+    // Listen for device changes
+    navigator.mediaDevices.addEventListener('devicechange', getAudioDevices)
+    
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', getAudioDevices)
+    }
+  }, [])
 
   useEffect(() => {
     // Initialize WebSocket connection
@@ -132,6 +178,9 @@ export default function VoiceChat() {
     recordingRef.current = recording
     if (recording) {
       recordingStartTimeRef.current = Date.now()
+    } else {
+      // Properly shutdown VAD when not recording
+      vad.pause()
     }
   }, [recording])
 
@@ -238,6 +287,9 @@ export default function VoiceChat() {
       streamRef.current = null
     }
 
+    // Ensure VAD is paused
+    vad.pause()
+    
     setRecording(false)
     recordingStartTimeRef.current = null
     setLiveTranscript("")
@@ -257,7 +309,8 @@ export default function VoiceChat() {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: false
+          autoGainControl: false,
+          deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined
         } 
       })
       streamRef.current = stream
@@ -265,6 +318,7 @@ export default function VoiceChat() {
       setRecording(true)
       recordingStartTimeRef.current = Date.now()
       
+      // Start VAD - constraints are handled at getUserMedia level
       await vad.start()
     } catch (error) {
       console.error("Error starting recording:", error)
@@ -291,8 +345,7 @@ export default function VoiceChat() {
     }
 
     setStatus("Processing...")
-    vad.pause()
-    cleanupAudio()
+    cleanupAudio() // This now ensures VAD is stopped
   }
 
   const toggleRecording = () => {
@@ -310,6 +363,23 @@ export default function VoiceChat() {
       } else {
         startRecording()
       }
+    }
+  }
+
+  // Toggle device selector visibility
+  const toggleDeviceSelector = () => {
+    setShowDeviceSelector(prev => !prev)
+  }
+
+  // Handle device selection
+  const handleDeviceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newDeviceId = e.target.value
+    setSelectedDeviceId(newDeviceId)
+    
+    // If already recording, restart with new device
+    if (recording) {
+      cleanupAudio()
+      setTimeout(() => startRecording(), 500)
     }
   }
 
@@ -432,19 +502,51 @@ export default function VoiceChat() {
         
         {/* Controls */}
         <div className="w-full flex flex-col items-center gap-4">
-          <button
-            onClick={toggleRecording}
-            disabled={false}
-            className={`flex items-center justify-center rounded-full w-16 h-16 text-2xl transition-all duration-300 shadow-lg
-              ${isAIPlaying 
-                ? "bg-blue-600 hover:bg-blue-700 animate-pulse" 
-                : recording 
-                  ? "bg-red-600 hover:bg-red-700 animate-pulse" 
-                  : "bg-gray-700 hover:bg-gray-600"}`}
-            aria-label={isAIPlaying ? "Stop AI" : recording ? "Stop recording" : "Start recording"}
-          >
-            {recording ? <FaMicrophone /> : <FaMicrophoneSlash />}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={toggleRecording}
+              disabled={false}
+              className={`flex items-center justify-center rounded-full w-16 h-16 text-2xl transition-all duration-300 shadow-lg
+                ${isAIPlaying 
+                  ? "bg-blue-600 hover:bg-blue-700 animate-pulse" 
+                  : recording 
+                    ? "bg-red-600 hover:bg-red-700 animate-pulse" 
+                    : "bg-gray-700 hover:bg-gray-600"}`}
+              aria-label={isAIPlaying ? "Stop AI" : recording ? "Stop recording" : "Start recording"}
+            >
+              {recording ? <FaMicrophone /> : <FaMicrophoneSlash />}
+            </button>
+            
+            <button
+              onClick={toggleDeviceSelector}
+              className="bg-gray-700 hover:bg-gray-600 p-3 rounded-full text-lg"
+              aria-label="Select microphone"
+              title="Select microphone"
+            >
+              <FaCog />
+            </button>
+          </div>
+          
+          {/* Microphone selector dropdown */}
+          {showDeviceSelector && (
+            <div className="w-full bg-gray-800 p-3 rounded-lg mb-3">
+              <label htmlFor="microphone-select" className="block mb-2 text-sm">
+                Select Microphone:
+              </label>
+              <select
+                id="microphone-select"
+                value={selectedDeviceId}
+                onChange={handleDeviceChange}
+                className="w-full bg-gray-700 text-white px-3 py-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {audioDevices.map(device => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           
           {aiAudioUrl && (
             <audio 
