@@ -181,6 +181,14 @@ export default function VoiceChat() {
     } else {
       // Properly shutdown VAD when not recording
       vad.pause()
+      
+      // Stop any active media tracks
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          track.stop()
+        })
+        streamRef.current = null
+      }
     }
   }, [recording])
 
@@ -276,14 +284,36 @@ export default function VoiceChat() {
     frameSamples: 1024
   })
 
+  // Cleanup on component unmount
+  useEffect(() => {
+    return () => {
+      // Ensure microphone is released when component unmounts
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          track.stop()
+        })
+      }
+      
+      // Ensure VAD is completely destroyed
+      vad.pause()
+      cleanupAudio()
+    }
+  }, [])
+
   const cleanupAudio = () => {
     if (silenceTimeoutRef.current) {
       clearTimeout(silenceTimeoutRef.current)
       silenceTimeoutRef.current = null
     }
 
+    // Completely stop and release the microphone stream
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current.getTracks().forEach(track => {
+        if (track.readyState === 'live') {
+          console.log('Stopping track:', track.label)
+          track.stop()
+        }
+      })
       streamRef.current = null
     }
 
@@ -296,15 +326,20 @@ export default function VoiceChat() {
     currentChunkRef.current = []
   }
 
+  // Create a completely new VAD instance each time we start recording
   const startRecording = async () => {
     if (isAIPlaying) return // Don't start if AI is playing
     console.log("Starting recording...", new Date().toISOString())
     try {
+      // First ensure any previous recording is fully cleaned up
+      cleanupAudio()
+      
       setStatus("Listening...")
       currentChunkRef.current = []
       setLiveTranscript("")
       setInputMode('voice')
 
+      // Get microphone access with selected device
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -327,6 +362,7 @@ export default function VoiceChat() {
     }
   }
 
+  // Ensure we fully stop the recording when requested
   const stopRecording = (isManual: boolean = true) => {
     if (isManual) {
       // Only check duration for manual stops
@@ -345,7 +381,9 @@ export default function VoiceChat() {
     }
 
     setStatus("Processing...")
-    cleanupAudio() // This now ensures VAD is stopped
+    
+    // Ensure everything is fully shut down
+    cleanupAudio()
   }
 
   const toggleRecording = () => {
