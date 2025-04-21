@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from "react"
-import { FaMicrophone, FaMicrophoneSlash } from "react-icons/fa"
+import { FaMicrophone, FaMicrophoneSlash, FaPaperPlane } from "react-icons/fa"
 import { useMicVAD } from "@ricky0123/vad-react"
 
 interface Message {
@@ -9,6 +9,9 @@ interface Message {
   text: string
   pending?: boolean
 }
+
+// Input modes to track which method the user is using
+type InputMode = 'voice' | 'text' | 'idle';
 
 export default function VoiceChat() {
   const [recording, setRecording] = useState(false)
@@ -30,6 +33,9 @@ export default function VoiceChat() {
   const lastTranscriptRef = useRef("")
   const [displayedText, setDisplayedText] = useState("")
   const animationRef = useRef<NodeJS.Timeout | null>(null)
+  const [textInput, setTextInput] = useState("")
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [inputMode, setInputMode] = useState<InputMode>('idle')
 
   useEffect(() => {
     // Initialize WebSocket connection
@@ -245,6 +251,7 @@ export default function VoiceChat() {
       setStatus("Listening...")
       currentChunkRef.current = []
       setLiveTranscript("")
+      setInputMode('voice')
 
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -345,15 +352,37 @@ export default function VoiceChat() {
     }
   }, [liveTranscript])
 
+  const handleTextSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!textInput.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+
+    const message = textInput.trim()
+    setTextInput("")
+    
+    // Set input mode to text
+    setInputMode('text')
+    
+    // Add user message to chat
+    setMessages(prev => [...prev, { type: 'user', text: message }])
+    
+    // Send text message to server
+    wsRef.current.send(JSON.stringify({
+      type: 'text_message',
+      text: message
+    }))
+    
+    setStatus("Processing text message...")
+  }
+
   return (
     <main className="bg-gray-900 min-h-screen flex flex-col items-center justify-center text-white relative">
       <div className="flex flex-col items-center justify-center w-full max-w-2xl mx-auto p-4 relative">
-        <h1 className="text-2xl font-bold mb-8">AI Voice Chat</h1>
+        <h1 className="text-2xl font-bold mb-8">AI Voice & Text Chat</h1>
         
         {/* Chat container */}
         <div 
           ref={chatContainerRef}
-          className="w-full bg-gray-800 rounded-lg p-4 mb-8 h-[400px] overflow-y-auto flex flex-col gap-4"
+          className="w-full bg-gray-800 rounded-lg p-4 mb-4 h-[400px] overflow-y-auto flex flex-col gap-4"
         >
           {messages.map((message, index) => (
             <div 
@@ -379,6 +408,27 @@ export default function VoiceChat() {
             </div>
           )}
         </div>
+        
+        {/* Text input form */}
+        <form onSubmit={handleTextSubmit} className="w-full mb-4 flex gap-2">
+          <input
+            ref={inputRef}
+            type="text"
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            placeholder="Type your message..."
+            className="flex-1 bg-gray-700 text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={isAIPlaying}
+          />
+          <button
+            type="submit"
+            disabled={!textInput.trim() || isAIPlaying}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            <FaPaperPlane />
+            Send
+          </button>
+        </form>
         
         {/* Controls */}
         <div className="w-full flex flex-col items-center gap-4">
@@ -407,7 +457,11 @@ export default function VoiceChat() {
                 setIsAIPlaying(false)
                 setStatus("Idle")
                 playPromiseRef.current = null
-                startRecording() // Auto-restart recording when AI response ends
+                
+                // Only auto-restart recording if previous input was voice
+                if (inputMode === 'voice') {
+                  startRecording()
+                }
               }}
             />
           )}
