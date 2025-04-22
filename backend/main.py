@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
-
+from agents import process_user_query
 # Load environment variables from .env file
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key="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")
 
 app = FastAPI()
 
@@ -62,8 +62,12 @@ async def process_text_message(text: str, websocket: WebSocket):
         )
         
         ai_text = chat_response.choices[0].message.content
-        print(f"AI response: {ai_text}")
-        
+        #print(f"AI response: {ai_text}")
+        from non_stream_agent import process_user_query
+        print(process_user_query)
+        ai_text  = process_user_query(ai_text)
+        ai_text = chat_response.choices[0].message.content
+
         # Generate speech from AI response
         tts_response = client.audio.speech.create(
             model="tts-1",

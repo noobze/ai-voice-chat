@@ -85,7 +85,7 @@ export default function VoiceChat() {
 
   useEffect(() => {
     // Initialize WebSocket connection
-    wsRef.current = new WebSocket('wss:////ai-voice-chat-zxsh.onrender.com/ws')
+    wsRef.current = new WebSocket('wss://ai-voice-chat-zxsh.onrender.com/ws')
     
     wsRef.current.onopen = () => {
       console.log('WebSocket connected')
