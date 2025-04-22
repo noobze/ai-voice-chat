@@ -85,7 +85,7 @@ export default function VoiceChat() {
 
   useEffect(() => {
     // Initialize WebSocket connection
-    wsRef.current = new WebSocket('ws://localhost:8000/ws')
+    wsRef.current = new WebSocket('ws://140.245.31.35:8000/ws')
     
     wsRef.current.onopen = () => {
       console.log('WebSocket connected')
