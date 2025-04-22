@@ -10,7 +10,7 @@ from agents import process_user_query
 # Load environment variables from .env file
 load_dotenv()
 
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=os.environ("OPENAI_API_KEY"))
 
 app = FastAPI()
 
